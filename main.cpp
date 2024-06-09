@@ -2,9 +2,23 @@
 #include <mod/logger.h>
 #include <mod/config.h>
 
-#include "GTASA_STRUCTS.h"
+#ifdef AML32
+    #include "GTASA_STRUCTS.h"
+#else
+    #include "GTASA_STRUCTS_210.h"
+#endif
 
-MYMOD(net.rusjj.wantedradar, Wanted Radar, 1.0, RusJJ)
+MYMOD(net.rusjj.wantedradar, Wanted Radar, 1.2, RusJJ)
+
+enum eGameLoaded
+{
+    GL_Unknown = 0,
+    GL_SA,
+    GL_VC,
+
+    GL_GAMES
+};
+eGameLoaded loadedGame = eGameLoaded::GL_Unknown;
 
 // Savings
 uintptr_t pGame;
@@ -16,80 +30,74 @@ int cfgTimeToSwitch = 800;
 float cfgRadarStartSpeed = 0.001f;
 float cfgRadarStopSpeed = 0.003f;
 rgba_t cfgRed = { 225, 30, 40, 0 }, cfgBlue = { 30, 40, 225, 0 };
+rgba_t clrWhite = { 255, 255, 255, 255 };
 
 // Vars
 uint32_t *m_snTimeInMilliseconds;
 float *ms_fTimeScale;
+void *maVertices;
+CWidget **m_pWidgets;
 
 // Funcs
 CWanted* (*FindPlayerWanted)(int);
-inline rgba_t ProgressColor(rgba_t src, float progress)
+void (*RwRenderStateSet)(RwRenderState, void*);
+void (*DrawRect)(CRect*, CRGBA*);
+inline rgba_t ProgressColor(rgba_t dest, rgba_t src, float progress)
 {
-    uint8_t r = src.r;
-    uint8_t g = src.g;
-    uint8_t b = src.b;
+    uint8_t r = dest.r;
+    uint8_t g = dest.g;
+    uint8_t b = dest.b;
     float invprogress = 1.0f - progress;
     return rgba_t
     {
-        (uint8_t)(r + (255 - r) * invprogress),
-        (uint8_t)(g + (255 - g) * invprogress),
-        (uint8_t)(b + (255 - b) * invprogress),
+        (uint8_t)(r + (src.r - r) * invprogress),
+        (uint8_t)(g + (src.g - g) * invprogress),
+        (uint8_t)(b + (src.b - b) * invprogress),
         0
     };
 }
+inline uint8_t ProgressAlpha(float progress)
+{
+    return (uint8_t)(progress * 0xFF);
+}
 
 // Hooks
-uintptr_t DrawRadarSection_BackTo;
-extern "C" void DrawRadarSection_Patch(CRGBA* self, uint8_t alpha)
+DECL_HOOKv(DrawRadarGangOverlay, bool bFullMap)
 {
-    CWanted* wanted;
-    if((wanted = FindPlayerWanted(-1)) && wanted->m_nWantedLevel > 0)
-    {
-        float maxprogress = wanted->m_nWantedLevel > 2 ? 1.0f : 0.6f;
+    DrawRadarGangOverlay(bFullMap);
 
-        RadarColorProgress += cfgRadarStartSpeed / *ms_fTimeScale;
-        if(RadarColorProgress > maxprogress) RadarColorProgress = maxprogress;
-    }
-    else
+    if(m_pWidgets[WIDGET_RADAR])
     {
-        RadarColorProgress -= cfgRadarStopSpeed / *ms_fTimeScale;
-        if(RadarColorProgress < 0) RadarColorProgress = 0;
-    }
-
-    if(RadarColorProgress > 0)
-    {
-        rgba_t clr;
-        if((*m_snTimeInMilliseconds / cfgTimeToSwitch) % 2 == 0)
+        CWanted* wanted = FindPlayerWanted(-1);
+        if(!wanted || wanted->m_nWantedLevel <= 0)
         {
-            clr = ProgressColor(cfgRed, RadarColorProgress);
+            RadarColorProgress -= cfgRadarStopSpeed / *ms_fTimeScale;
+            if(RadarColorProgress < 0) RadarColorProgress = 0;
         }
         else
         {
-            clr = ProgressColor(cfgBlue, RadarColorProgress);
-        }
-        *self = { clr.r, clr.g, clr.b, alpha };
-    }
-    else
-    {
-        *self = { 255, 255, 255, alpha };
-    }
-}
-__attribute__((optnone)) __attribute__((naked)) void DrawRadarSection_InjectSA(void)
-{
-    asm volatile(
-        "UXTB.W R0, R8\n"
-        "STR R0, [SP]\n"
+            float maxprogress = wanted->m_nWantedLevel > 2 ? 0.5f : 0.3f;
 
-        //"PUSH {R0-R11}\n"
-        "ADD R0, SP, #0x8\n"
-        "MOV R1, R8\n"
-        "MOV R4, R0\n"
-        "BL DrawRadarSection_Patch\n");
-    asm volatile(
-        "MOV R12, %0\n"
-        //"POP {R0-R11}\n"
-        "BX R12\n"
-    :: "r" (DrawRadarSection_BackTo));
+            RadarColorProgress += cfgRadarStartSpeed / *ms_fTimeScale;
+            if(RadarColorProgress > maxprogress) RadarColorProgress = maxprogress;
+        }
+        
+        if(RadarColorProgress > 0)
+        {
+            CRect* drawRect = &m_pWidgets[WIDGET_RADAR]->screenRect;
+            CRGBA* rgbaColor;
+            if((*m_snTimeInMilliseconds / cfgTimeToSwitch) % 2 == 0)
+            {
+                rgbaColor = (CRGBA*)&cfgRed;
+            }
+            else
+            {
+                rgbaColor = (CRGBA*)&cfgBlue;
+            }
+            rgbaColor->a = ProgressAlpha(RadarColorProgress);
+            DrawRect(drawRect, rgbaColor);
+        }
+    }
 }
 
 // int main!
@@ -100,8 +108,14 @@ extern "C" void OnModLoad()
     {
         hGame = aml->GetLibHandle("libGTASA.so");
         cfg = new Config("WantedRadar.SA");
-        DrawRadarSection_BackTo = pGame + 0x443ABE + 0x1;
-        aml->Redirect(pGame + 0x443AAA + 0x1, (uintptr_t)DrawRadarSection_InjectSA);
+
+      #ifdef AML32
+        HOOKBLX(DrawRadarGangOverlay, pGame + 0x43E730 + 0x1);
+      #else
+        HOOKBL(DrawRadarGangOverlay, pGame + 0x523BD0);
+      #endif
+
+        loadedGame = eGameLoaded::GL_SA;
     }
     else
     {
@@ -111,7 +125,12 @@ extern "C" void OnModLoad()
 
     SET_TO(m_snTimeInMilliseconds, aml->GetSym(hGame, "_ZN6CTimer22m_snTimeInMillisecondsE"));
     SET_TO(ms_fTimeScale, aml->GetSym(hGame, "_ZN6CTimer13ms_fTimeScaleE"));
+    SET_TO(maVertices, aml->GetSym(hGame, "_ZN9CSprite2d10maVerticesE"));
+    SET_TO(m_pWidgets, *(void**)(pGame + BYBIT(0x67947C, 0x850910)));
+
     SET_TO(FindPlayerWanted, aml->GetSym(hGame, "_Z16FindPlayerWantedi"));
+    SET_TO(RwRenderStateSet, aml->GetSym(hGame, "_Z16RwRenderStateSet13RwRenderStatePv"));
+    SET_TO(DrawRect, aml->GetSym(hGame, "_ZN9CSprite2d8DrawRectERK5CRectRK5CRGBA"));
 
     cfgRed =  cfg->GetColor("RedColor", cfgRed);
     cfgBlue = cfg->GetColor("BlueColor", cfgBlue);
