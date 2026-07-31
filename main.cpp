@@ -8,7 +8,7 @@
     #include "GTASA_STRUCTS_210.h"
 #endif
 
-MYMOD(net.rusjj.wantedradar, Wanted Radar, 1.1, RusJJ)
+MYMOD(net.rusjj.wantedradar, Wanted Radar, 1.1.1, RusJJ)
 
 enum eGameLoaded
 {
@@ -56,6 +56,9 @@ DECL_HOOKv(DrawRadarGangOverlay, bool bFullMap)
 
     if(bFullMap) return; // We dont need it on a menu map.
 
+    CWidget* radarWidget = m_pWidgets[WIDGET_RADAR];
+    if(!radarWidget || !radarWidget->color.a) return; // No widget or its invisible
+
     CWanted* wanted = FindPlayerWanted(-1);
     if(!wanted || wanted->m_nWantedLevel <= 0)
     {
@@ -72,7 +75,7 @@ DECL_HOOKv(DrawRadarGangOverlay, bool bFullMap)
     
     if(RadarColorProgress > 0)
     {
-        CRect drawRect;// = m_pWidgets[WIDGET_RADAR]->screenRect;
+        CRect drawRect;
         drawRect.bottom = drawRect.right = 30000.0f;
         drawRect.top = drawRect.left = -30000.0f;
         CRGBA* rgbaColor;
@@ -85,6 +88,7 @@ DECL_HOOKv(DrawRadarGangOverlay, bool bFullMap)
             rgbaColor = (CRGBA*)&cfgBlue;
         }
         rgbaColor->a = ProgressAlpha(RadarColorProgress);
+        rgbaColor->a = ((int)rgbaColor->a * (int)radarWidget->color.a) >> 8;
 
         DrawAreaOnRadar(&drawRect, rgbaColor, bFullMap);
     }
